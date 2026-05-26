@@ -103,6 +103,51 @@ func TestSortByPK_SelfRef_BranchingTree(t *testing.T) {
 	}
 }
 
+func TestSortByPK_MultipleSelfRefs(t *testing.T) {
+	t.Parallel()
+
+	// employees with two self-ref FKs: manager_id and mentor_id.
+	table := introspect.Table{
+		Name:       "employees",
+		PrimaryKey: []string{"id"},
+		ForeignKeys: []introspect.ForeignKey{
+			{
+				Name:              "fk_manager",
+				Columns:           []string{"manager_id"},
+				ReferencedTable:   "employees",
+				ReferencedColumns: []string{"id"},
+			},
+			{
+				Name:              "fk_mentor",
+				Columns:           []string{"mentor_id"},
+				ReferencedTable:   "employees",
+				ReferencedColumns: []string{"id"},
+			},
+		},
+	}
+	// Dave: manager=Bob(2), mentor=Alice(1). Bob: manager=Alice(1).
+	rows := []extract.Row{
+		{"id": 4, "manager_id": 2, "mentor_id": 1},
+		{"id": 2, "manager_id": 1, "mentor_id": nil},
+		{"id": 1, "manager_id": nil, "mentor_id": nil},
+	}
+	got, err := extract.SortByPK(rows, table)
+	if err != nil {
+		t.Fatalf("SortByPK: %v", err)
+	}
+	posOf := map[any]int{}
+	for i, r := range got {
+		posOf[r["id"]] = i
+	}
+	// Alice before Bob and Dave (manager + mentor); Bob before Dave (manager).
+	if posOf[1] >= posOf[2] || posOf[1] >= posOf[4] {
+		t.Errorf("id=1 must precede id=2 and id=4; got %v", got)
+	}
+	if posOf[2] >= posOf[4] {
+		t.Errorf("id=2 must precede id=4; got %v", got)
+	}
+}
+
 func TestSortByPK_SelfRef_DataCycleErrors(t *testing.T) {
 	t.Parallel()
 

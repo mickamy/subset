@@ -16,22 +16,25 @@ import (
 // (e.g., A -> B -> A) also returns an error: the apply step would need a
 // DEFERRABLE constraint to succeed, which is out of scope.
 func SortByPK(rows []Row, table introspect.Table) ([]Row, error) {
-	selfRef := findSelfRef(table)
-	if selfRef == nil {
+	selfRefs := findSelfRefs(table)
+	if len(selfRefs) == 0 {
 		return rows, nil
-	}
-	if len(selfRef.Columns) != 1 || len(selfRef.ReferencedColumns) != 1 {
-		return nil, fmt.Errorf(
-			"table %q has composite self-referencing FK %q; v0.1 supports single-column self-refs",
-			table.Name, selfRef.Name)
 	}
 	if len(table.PrimaryKey) != 1 {
 		return nil, fmt.Errorf(
 			"table %q has composite primary key with self-ref FK; v0.1 supports single-column PKs",
 			table.Name)
 	}
+	refCols := make([]string, 0, len(selfRefs))
+	for _, fk := range selfRefs {
+		if len(fk.Columns) != 1 || len(fk.ReferencedColumns) != 1 {
+			return nil, fmt.Errorf(
+				"table %q has composite self-referencing FK %q; v0.1 supports single-column self-refs",
+				table.Name, fk.Name)
+		}
+		refCols = append(refCols, fk.Columns[0])
+	}
 
-	refCol := selfRef.Columns[0]
 	pkCol := table.PrimaryKey[0]
 
 	byPK := make(map[any]Row, len(rows))
@@ -55,12 +58,18 @@ func SortByPK(rows []Row, table introspect.Table) ([]Row, error) {
 			return nil
 		case gray:
 			return fmt.Errorf(
-				"table %q has cyclic data via self-ref FK %q starting at pk=%v",
-				table.Name, selfRef.Name, row[pkCol])
+				"table %q has cyclic data via self-referencing FK(s) starting at pk=%v",
+				table.Name, row[pkCol])
 		}
 		state[rowKey] = gray
 
-		if refVal := row[refCol]; refVal != nil {
+		// Visit the parent referenced by every self-ref FK, so the emitted
+		// order satisfies all of them (e.g., both manager_id and mentor_id).
+		for _, refCol := range refCols {
+			refVal := row[refCol]
+			if refVal == nil {
+				continue
+			}
 			if parent, ok := byPK[normalizeKey(refVal)]; ok {
 				if err := visit(parent); err != nil {
 					return err
@@ -85,14 +94,15 @@ func SortByPK(rows []Row, table introspect.Table) ([]Row, error) {
 	return result, nil
 }
 
-func findSelfRef(table introspect.Table) *introspect.ForeignKey {
+func findSelfRefs(table introspect.Table) []introspect.ForeignKey {
+	var refs []introspect.ForeignKey
 	for i := range table.ForeignKeys {
 		if table.ForeignKeys[i].ReferencedTable == table.Name {
-			return &table.ForeignKeys[i]
+			refs = append(refs, table.ForeignKeys[i])
 		}
 	}
 
-	return nil
+	return refs
 }
 
 // normalizeKey returns a comparable representation of v suitable as a Go
