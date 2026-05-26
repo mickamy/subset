@@ -1,7 +1,11 @@
 APP_NAME  = subset
 BUILD_DIR = bin
+DOCKER_COMPOSE ?= docker compose
 
-.PHONY: all build install uninstall clean test lint
+SUBSET_TEST_DSN_POSTGRES ?= postgres://postgres:pass@127.0.0.1:5432/dev?sslmode=disable
+SUBSET_TEST_DSN_MYSQL    ?= mysql://root:pass@127.0.0.1:3306/dev?parseTime=true
+
+.PHONY: all build install uninstall clean test test-integration compose-up compose-down lint
 
 all: build
 
@@ -35,6 +39,17 @@ clean:
 
 test:
 	go test ./... -race
+
+test-integration:
+	SUBSET_TEST_DSN_POSTGRES="$(SUBSET_TEST_DSN_POSTGRES)" \
+	SUBSET_TEST_DSN_MYSQL="$(SUBSET_TEST_DSN_MYSQL)" \
+	go test -tags=integration ./... -race $(GOTESTFLAGS)
+
+compose-up:
+	$(DOCKER_COMPOSE) up -d --wait
+
+compose-down:
+	$(DOCKER_COMPOSE) down
 
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { \

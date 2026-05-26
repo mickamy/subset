@@ -1,8 +1,8 @@
 have_fun: false
 memory_config:
-  disabled: true
+  disabled: false
 code_review:
-  disable: true
+  disable: false
   comment_severity_threshold: MEDIUM
   max_review_comments: -1
   pull_request_opened:
