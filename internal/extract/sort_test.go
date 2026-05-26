@@ -278,3 +278,27 @@ func TestSortByPK_CompositePKErrors(t *testing.T) {
 		t.Fatal("expected error for composite PK with self-ref")
 	}
 }
+
+func TestSortByPK_NoPKWithSelfRefErrors(t *testing.T) {
+	t.Parallel()
+
+	table := introspect.Table{
+		Name:       "nodes",
+		PrimaryKey: nil,
+		ForeignKeys: []introspect.ForeignKey{
+			{
+				Name:              "fk_self",
+				Columns:           []string{"parent"},
+				ReferencedTable:   "nodes",
+				ReferencedColumns: []string{"id"},
+			},
+		},
+	}
+	_, err := extract.SortByPK(nil, table)
+	if err == nil {
+		t.Fatal("expected error for self-ref table without a primary key")
+	}
+	if !strings.Contains(err.Error(), "single-column primary key") {
+		t.Errorf("err = %v; want single-column primary key message", err)
+	}
+}

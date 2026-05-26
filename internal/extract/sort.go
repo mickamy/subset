@@ -22,8 +22,9 @@ func SortByPK(rows []Row, table introspect.Table) ([]Row, error) {
 	}
 	if len(table.PrimaryKey) != 1 {
 		return nil, fmt.Errorf(
-			"table %q has composite primary key with self-ref FK; v0.1 supports single-column PKs",
-			table.Name)
+			"table %q needs a single-column primary key for self-ref ordering (has %d)",
+			table.Name, len(table.PrimaryKey),
+		)
 	}
 	refCols := make([]string, 0, len(selfRefs))
 	for _, fk := range selfRefs {
