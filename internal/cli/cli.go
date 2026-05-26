@@ -18,7 +18,7 @@ var commands = []command{
 	{
 		name:    "clone",
 		summary: "Pull rows plus their FK parents as INSERT statements",
-		run:     notImplemented("clone"),
+		run:     runClone,
 		usage:   printCloneUsage,
 	},
 	{
