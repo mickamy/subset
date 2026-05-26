@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type Postgres struct{}
@@ -34,6 +35,16 @@ func (p Postgres) QuoteLiteral(v any) string {
 	case string:
 		return p.quoteString(x)
 	case []byte:
+		// Drivers return []byte for genuine bytea/BLOB and for some text-ish
+		// types (Postgres JSON/JSONB, NUMERIC variants). extract.querySelect
+		// converts non-Bytes Kinds back to string upstream, but emit may be
+		// called directly with raw []byte too. utf8.Valid is the cheapest
+		// safe heuristic: valid UTF-8 → quote as text (implicit cast still
+		// stores correctly for bytea), invalid → emit hex bytea literal.
+		if utf8.Valid(x) {
+			return p.quoteString(string(x))
+		}
+
 		return `'\x` + hex.EncodeToString(x) + "'"
 	case int:
 		return strconv.FormatInt(int64(x), 10)

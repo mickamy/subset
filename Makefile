@@ -43,7 +43,7 @@ test:
 test-integration:
 	SUBSET_TEST_DSN_POSTGRES="$(SUBSET_TEST_DSN_POSTGRES)" \
 	SUBSET_TEST_DSN_MYSQL="$(SUBSET_TEST_DSN_MYSQL)" \
-	go test -tags=integration ./... -race $(GOTESTFLAGS)
+	go test -tags=integration -p 1 ./... -race $(GOTESTFLAGS)
 
 compose-up:
 	$(DOCKER_COMPOSE) up -d --wait
