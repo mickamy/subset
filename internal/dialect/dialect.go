@@ -13,7 +13,8 @@ type Dialect interface {
 }
 
 func New(dataSourceName string) (Dialect, error) {
-	switch dsn.Scheme(dataSourceName) {
+	scheme := dsn.Scheme(dataSourceName)
+	switch scheme {
 	case "mysql":
 		return MySQL{}, nil
 	case "postgres", "postgresql":
@@ -21,8 +22,6 @@ func New(dataSourceName string) (Dialect, error) {
 	case "":
 		return nil, dsn.ErrMissingScheme
 	default:
-		scheme := dsn.Scheme(dataSourceName)
-
 		return nil, fmt.Errorf("unsupported DSN scheme %q (supported: mysql, postgres, postgresql)", scheme)
 	}
 }
