@@ -181,6 +181,38 @@ func TestSortByPK_CompositeSelfRefErrors(t *testing.T) {
 	}
 }
 
+func TestNormalizeKey(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   any
+		want any
+	}{
+		{"int", 1, int64(1)},
+		{"int8", int8(1), int64(1)},
+		{"int16", int16(1), int64(1)},
+		{"int32", int32(1), int64(1)},
+		{"int64", int64(1), int64(1)},
+		{"uint", uint(1), uint64(1)},
+		{"uint8", uint8(1), uint64(1)},
+		{"uint16", uint16(1), uint64(1)},
+		{"uint32", uint32(1), uint64(1)},
+		{"uint64", uint64(1), uint64(1)},
+		{"bytes to string", []byte("abc"), "abc"},
+		{"string passthrough", "x", "x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := extract.NormalizeKey(tc.in); got != tc.want {
+				t.Errorf("NormalizeKey(%v (%T)) = %v (%T); want %v (%T)",
+					tc.in, tc.in, got, got, tc.want, tc.want)
+			}
+		})
+	}
+}
+
 func TestSortByPK_CompositePKErrors(t *testing.T) {
 	t.Parallel()
 
