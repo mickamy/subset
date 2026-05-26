@@ -7,11 +7,15 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strings"
 	"testing"
 
+	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/mickamy/subset/internal/cli"
+	"github.com/mickamy/subset/internal/dsn"
+	"github.com/mickamy/subset/internal/test/tsql"
 )
 
 const (
@@ -152,6 +156,150 @@ func TestClone_E2E_Postgres(t *testing.T) {
 	}
 	if totalYen != 1000 {
 		t.Errorf("order total = %d; want 1000", totalYen)
+	}
+}
+
+const (
+	mysqlCloneSchemaSQL = `
+CREATE TABLE tenants (
+    id   INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL
+);
+CREATE TABLE users (
+    id        INT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id INT NOT NULL,
+    email     VARCHAR(255) NOT NULL,
+    name      VARCHAR(255),
+    UNIQUE (tenant_id, email),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+);
+CREATE TABLE products (
+    id        INT AUTO_INCREMENT PRIMARY KEY,
+    tenant_id INT NOT NULL,
+    sku       VARCHAR(255) NOT NULL,
+    name      VARCHAR(255) NOT NULL,
+    price_yen INT NOT NULL,
+    UNIQUE (tenant_id, sku),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+);
+CREATE TABLE orders (
+    id        INT AUTO_INCREMENT PRIMARY KEY,
+    user_id   INT NOT NULL,
+    status    ENUM('pending', 'paid', 'shipped', 'cancelled') NOT NULL,
+    total_yen INT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE TABLE order_items (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    order_id   INT NOT NULL,
+    product_id INT NOT NULL,
+    qty        INT NOT NULL,
+    price_yen  INT NOT NULL,
+    FOREIGN KEY (order_id)   REFERENCES orders(id),
+    FOREIGN KEY (product_id) REFERENCES products(id)
+);
+`
+	mysqlCloneSeedSQL = `
+INSERT INTO tenants (id, name) VALUES (1, 'Acme'), (2, 'Beta');
+INSERT INTO users (id, tenant_id, email, name) VALUES
+    (1, 1, 'alice@acme.com', 'Alice'),
+    (2, 1, 'bob@acme.com',   'Bob');
+INSERT INTO products (id, tenant_id, sku, name, price_yen) VALUES
+    (1, 1, 'ACME-001', 'Widget', 1000);
+INSERT INTO orders (id, user_id, status, total_yen) VALUES
+    (1, 1, 'paid', 1000);
+INSERT INTO order_items (id, order_id, product_id, qty, price_yen) VALUES
+    (1, 1, 1, 1, 1000);
+`
+)
+
+//nolint:paralleltest // mutates schema; cannot run in parallel
+func TestClone_E2E_MySQL(t *testing.T) {
+	rawDSN := os.Getenv("SUBSET_TEST_DSN_MYSQL")
+	if rawDSN == "" {
+		t.Skip("SUBSET_TEST_DSN_MYSQL not set")
+	}
+
+	ctx := t.Context()
+	driverDSN, err := dsn.ToMySQLDSN(rawDSN)
+	if err != nil {
+		t.Fatalf("convert dsn: %v", err)
+	}
+	db, err := sql.Open("mysql", driverDSN)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// 1. Source DB: full fixture.
+	if err := tsql.ResetMySQLTables(ctx, db); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	applyMySQLStatements(t, ctx, db, mysqlCloneSchemaSQL)
+	applyMySQLStatements(t, ctx, db, mysqlCloneSeedSQL)
+
+	// 2. Run subset clone via cli.Run.
+	var out, errBuf bytes.Buffer
+	exitCode := cli.Run(
+		[]string{"clone", rawDSN, "orders", "--id", "1"},
+		&out, &errBuf,
+	)
+	if exitCode != 0 {
+		t.Fatalf("clone exit %d; stderr=%s", exitCode, errBuf.String())
+	}
+	if out.Len() == 0 {
+		t.Fatal("clone produced no output")
+	}
+
+	// 3. Wipe and re-apply schema only.
+	if err := tsql.ResetMySQLTables(ctx, db); err != nil {
+		t.Fatalf("re-reset: %v", err)
+	}
+	applyMySQLStatements(t, ctx, db, mysqlCloneSchemaSQL)
+
+	// 4. Apply the captured clone SQL (statement-by-statement; the driver
+	//    doesn't accept multi-statement Exec without multiStatements=true).
+	applyMySQLStatements(t, ctx, db, out.String())
+
+	// 5. Verify the closure: orders/1 -> users/1 -> tenants/1.
+	checkCount(t, ctx, db, "tenants", 1)
+	checkCount(t, ctx, db, "users", 1)
+	checkCount(t, ctx, db, "orders", 1)
+	checkCount(t, ctx, db, "order_items", 0)
+	checkCount(t, ctx, db, "products", 0)
+
+	var tenantName, userEmail string
+	var totalYen int
+	if err := db.QueryRowContext(ctx, "SELECT name FROM tenants WHERE id = 1").Scan(&tenantName); err != nil {
+		t.Fatalf("read tenant: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT email FROM users WHERE id = 1").Scan(&userEmail); err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT total_yen FROM orders WHERE id = 1").Scan(&totalYen); err != nil {
+		t.Fatalf("read order: %v", err)
+	}
+	if tenantName != "Acme" {
+		t.Errorf("tenant name = %q; want Acme", tenantName)
+	}
+	if userEmail != "alice@acme.com" {
+		t.Errorf("user email = %q; want alice@acme.com", userEmail)
+	}
+	if totalYen != 1000 {
+		t.Errorf("order total = %d; want 1000", totalYen)
+	}
+}
+
+func applyMySQLStatements(t *testing.T, ctx context.Context, db *sql.DB, sqlText string) {
+	t.Helper()
+	for stmt := range strings.SplitSeq(sqlText, ";") {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("exec: %v\nstmt: %s", err, stmt)
+		}
 	}
 }
 
