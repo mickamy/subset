@@ -47,6 +47,8 @@ func (p Postgres) QuoteLiteral(v any) string {
 		return strconv.FormatInt(x, 10)
 	case uint:
 		return strconv.FormatUint(uint64(x), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(x), 10)
 	case uint16:
 		return strconv.FormatUint(uint64(x), 10)
 	case uint32:
