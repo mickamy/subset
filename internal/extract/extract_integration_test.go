@@ -140,6 +140,16 @@ func TestWalk_ForwardClosure_Postgres(t *testing.T) {
 		assertRowCount(t, result, "tenants", 1)
 	})
 
+	t.Run("empty whereClause selects all rows from seed", func(t *testing.T) {
+		// "tenants" sits at the top of the FK graph (no outgoing FKs),
+		// so passing empty whereClause should yield exactly all tenants.
+		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "tenants", "")
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		assertRowCount(t, result, "tenants", 2)
+	})
+
 	t.Run("composite FK walks through composite PK", func(t *testing.T) {
 		// page_comments(1) -> pages(site_id=1, slug='home') via composite FK,
 		// then pages -> sites(1) via single-column FK.

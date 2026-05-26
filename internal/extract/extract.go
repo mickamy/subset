@@ -22,6 +22,10 @@ type Collected struct {
 // Walk extracts rows from a seed (seedTable + whereClause) and recursively
 // collects FK-referenced parent rows (forward closure). Used by clone.
 //
+// An empty whereClause selects every row in seedTable (no WHERE filter
+// is appended). The CLI rejects empty filters; this is for callers that
+// want to clone the full contents of a small lookup table.
+//
 // Composite primary keys and composite foreign keys are supported.
 // Self-referencing FKs (e.g., employees.manager_id -> employees.id) return
 // an error because intra-table emission ordering is not yet implemented.
@@ -47,7 +51,10 @@ func Walk(
 	collected := &Collected{Rows: make(map[string][]Row)}
 	visited := make(map[string]map[string]bool)
 
-	seedQuery := fmt.Sprintf("%s WHERE %s", selectAll(d, seed), whereClause)
+	seedQuery := selectAll(d, seed)
+	if whereClause != "" {
+		seedQuery += " WHERE " + whereClause
+	}
 	seedRows, err := querySelect(ctx, db, seedQuery, nil, seed)
 	if err != nil {
 		return nil, fmt.Errorf("seed select: %w", err)
