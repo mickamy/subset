@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type MySQL struct{}
@@ -34,6 +35,15 @@ func (m MySQL) QuoteLiteral(v any) string {
 	case string:
 		return m.quoteString(x)
 	case []byte:
+		// go-sql-driver/mysql returns []byte for DECIMAL and JSON columns
+		// (not just BLOB). Emitting those as X'..' would let MySQL interpret
+		// the hex as a numeric in a numeric context, corrupting values.
+		// extract.querySelect converts non-Bytes Kinds upstream; this check
+		// is the defensive fallback for direct callers.
+		if utf8.Valid(x) {
+			return m.quoteString(string(x))
+		}
+
 		return "X'" + hex.EncodeToString(x) + "'"
 	case int:
 		return strconv.FormatInt(int64(x), 10)
