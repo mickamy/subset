@@ -34,11 +34,9 @@ func SortByPK(rows []Row, table introspect.Table) ([]Row, error) {
 	refCol := selfRef.Columns[0]
 	pkCol := table.PrimaryKey[0]
 
-	key := func(v any) string { return fmt.Sprintf("%#v", v) }
-
-	byPK := make(map[string]Row, len(rows))
+	byPK := make(map[any]Row, len(rows))
 	for _, row := range rows {
-		byPK[key(row[pkCol])] = row
+		byPK[normalizeKey(row[pkCol])] = row
 	}
 
 	const (
@@ -46,12 +44,12 @@ func SortByPK(rows []Row, table introspect.Table) ([]Row, error) {
 		gray  = 1
 		black = 2
 	)
-	state := make(map[string]int, len(rows))
+	state := make(map[any]int, len(rows))
 	result := make([]Row, 0, len(rows))
 
 	var visit func(row Row) error
 	visit = func(row Row) error {
-		rowKey := key(row[pkCol])
+		rowKey := normalizeKey(row[pkCol])
 		switch state[rowKey] {
 		case black:
 			return nil
@@ -63,7 +61,7 @@ func SortByPK(rows []Row, table introspect.Table) ([]Row, error) {
 		state[rowKey] = gray
 
 		if refVal := row[refCol]; refVal != nil {
-			if parent, ok := byPK[key(refVal)]; ok {
+			if parent, ok := byPK[normalizeKey(refVal)]; ok {
 				if err := visit(parent); err != nil {
 					return err
 				}
@@ -95,4 +93,38 @@ func findSelfRef(table introspect.Table) *introspect.ForeignKey {
 	}
 
 	return nil
+}
+
+// normalizeKey returns a comparable representation of v suitable as a Go
+// map key. Integer widths are unified to int64 / uint64 so that drivers
+// returning the same logical PK value with different concrete types
+// (e.g., int vs int64 in tests) hash to the same bucket. []byte is
+// converted to string because slices are not comparable.
+func normalizeKey(v any) any {
+	switch val := v.(type) {
+	case int:
+		return int64(val)
+	case int8:
+		return int64(val)
+	case int16:
+		return int64(val)
+	case int32:
+		return int64(val)
+	case int64:
+		return val
+	case uint:
+		return uint64(val)
+	case uint8:
+		return uint64(val)
+	case uint16:
+		return uint64(val)
+	case uint32:
+		return uint64(val)
+	case uint64:
+		return val
+	case []byte:
+		return string(val)
+	default:
+		return val
+	}
 }
