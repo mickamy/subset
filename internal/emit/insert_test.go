@@ -118,3 +118,68 @@ func TestBuildInsert_Postgres_QuotesEmbeddedSingleQuote(t *testing.T) {
 		t.Errorf("BuildInsert =\n  %s\nwant\n  %s", got, want)
 	}
 }
+
+func TestBuildInsert_MySQL(t *testing.T) {
+	t.Parallel()
+
+	table := introspect.Table{
+		Name: "users",
+		Columns: []introspect.Column{
+			{Name: "id"},
+			{Name: "email"},
+			{Name: "name"},
+		},
+	}
+	row := map[string]any{
+		"id":    1,
+		"email": "alice@example.com",
+		"name":  "Alice",
+	}
+	got := emit.BuildInsert(dialect.MySQL{}, table, row)
+	want := "INSERT INTO `users` (`id`, `email`, `name`) VALUES (1, 'alice@example.com', 'Alice');"
+	if got != want {
+		t.Errorf("BuildInsert =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+func TestBuildInsert_MySQL_WithNULL(t *testing.T) {
+	t.Parallel()
+
+	table := introspect.Table{
+		Name: "users",
+		Columns: []introspect.Column{
+			{Name: "id"},
+			{Name: "name"},
+		},
+	}
+	row := map[string]any{
+		"id":   1,
+		"name": nil,
+	}
+	got := emit.BuildInsert(dialect.MySQL{}, table, row)
+	want := "INSERT INTO `users` (`id`, `name`) VALUES (1, NULL);"
+	if got != want {
+		t.Errorf("BuildInsert =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+func TestBuildInsert_MySQL_EscapesBackslashAndQuote(t *testing.T) {
+	t.Parallel()
+
+	table := introspect.Table{
+		Name: "users",
+		Columns: []introspect.Column{
+			{Name: "id"},
+			{Name: "name"},
+		},
+	}
+	row := map[string]any{
+		"id":   1,
+		"name": `O'Brien\test`,
+	}
+	got := emit.BuildInsert(dialect.MySQL{}, table, row)
+	want := "INSERT INTO `users` (`id`, `name`) VALUES (1, 'O''Brien\\\\test');"
+	if got != want {
+		t.Errorf("BuildInsert =\n  %s\nwant\n  %s", got, want)
+	}
+}
