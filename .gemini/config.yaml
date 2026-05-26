@@ -11,8 +11,3 @@ code_review:
     summary: false
     code_review: true
     include_drafts: true
-
-  pull_request_synchronize:
-    help: false
-    summary: false
-    code_review: true
