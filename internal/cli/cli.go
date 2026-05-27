@@ -24,7 +24,7 @@ var commands = []command{
 	{
 		name:    "delete",
 		summary: "Remove rows plus their FK-dependent rows in safe order",
-		run:     notImplemented("delete"),
+		run:     runDelete,
 		usage:   printDeleteUsage,
 	},
 }
@@ -130,12 +130,4 @@ func printDeleteUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --id <value>     Shortcut for --where \"id=<value>\"")
 	fmt.Fprintln(w, "  --plan           Print row counts and FK paths; emit no rows")
 	fmt.Fprintln(w, "  --help, -h       Show this help")
-}
-
-func notImplemented(name string) func([]string, io.Writer, io.Writer) int {
-	return func(_ []string, _ io.Writer, stderr io.Writer) int {
-		fmt.Fprintf(stderr, "subset: %s is not yet implemented\n", name)
-
-		return exit.NotImplemented
-	}
 }

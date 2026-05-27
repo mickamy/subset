@@ -2,10 +2,10 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/mickamy/subset/internal/dialect"
 	"github.com/mickamy/subset/internal/emit"
@@ -15,10 +15,10 @@ import (
 	"github.com/mickamy/subset/internal/plan"
 )
 
-func runClone(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("clone", flag.ContinueOnError)
+func runDelete(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() { printCloneUsage(stderr) }
+	fs.Usage = func() { printDeleteUsage(stderr) }
 
 	whereFlag := fs.String("where", "", "WHERE clause selecting seed rows")
 	idFlag := fs.String("id", "", `shortcut for --where "id=<value>"`)
@@ -30,8 +30,8 @@ func runClone(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(posArgs) != 2 {
-		fmt.Fprintln(stderr, "subset clone: expected <dsn> <table>")
-		printCloneUsage(stderr)
+		fmt.Fprintln(stderr, "subset delete: expected <dsn> <table>")
+		printDeleteUsage(stderr)
 
 		return exit.Usage
 	}
@@ -40,20 +40,20 @@ func runClone(args []string, stdout, stderr io.Writer) int {
 
 	whereClause, err := buildWhereClause(*whereFlag, *idFlag)
 	if err != nil {
-		fmt.Fprintf(stderr, "subset clone: %v\n", err)
+		fmt.Fprintf(stderr, "subset delete: %v\n", err)
 
 		return exit.Usage
 	}
 
 	if *planFlag {
-		fmt.Fprintln(stderr, "subset clone: --plan is not yet implemented")
+		fmt.Fprintln(stderr, "subset delete: --plan is not yet implemented")
 
 		return exit.NotImplemented
 	}
 
 	ctx := context.Background()
-	if err := clone(ctx, stdout, dsnStr, tableName, whereClause); err != nil {
-		fmt.Fprintf(stderr, "subset clone: %v\n", err)
+	if err := deleteRows(ctx, stdout, dsnStr, tableName, whereClause); err != nil {
+		fmt.Fprintf(stderr, "subset delete: %v\n", err)
 
 		return exit.Error
 	}
@@ -61,20 +61,7 @@ func runClone(args []string, stdout, stderr io.Writer) int {
 	return exit.OK
 }
 
-func buildWhereClause(whereFlag, idFlag string) (string, error) {
-	switch {
-	case whereFlag != "" && idFlag != "":
-		return "", errors.New("--where and --id are mutually exclusive")
-	case whereFlag != "":
-		return whereFlag, nil
-	case idFlag != "":
-		return "id = " + idFlag, nil
-	default:
-		return "", errors.New("--where or --id is required")
-	}
-}
-
-func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause string) error {
+func deleteRows(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause string) error {
 	db, err := openDB(dsnStr)
 	if err != nil {
 		return err
@@ -91,7 +78,7 @@ func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause
 		return fmt.Errorf("dialect: %w", err)
 	}
 
-	collected, err := extract.Walk(ctx, db, d, schema, tableName, whereClause, extract.Forward)
+	collected, err := extract.Walk(ctx, db, d, schema, tableName, whereClause, extract.Backward)
 	if err != nil {
 		return fmt.Errorf("walk: %w", err)
 	}
@@ -104,7 +91,11 @@ func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause
 	for _, t := range schema.Tables {
 		tableByName[t.Name] = t
 	}
-	for _, name := range order {
+
+	// Delete most-dependent rows first: walk the parents-first topo order in
+	// reverse across tables, and reverse SortByPK within each self-referencing
+	// table so that referencing rows are removed before the rows they point at.
+	for _, name := range slices.Backward(order) {
 		rows := collected.Rows[name]
 		if len(rows) == 0 {
 			continue
@@ -113,8 +104,8 @@ func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause
 		if err != nil {
 			return fmt.Errorf("sort %q: %w", name, err)
 		}
-		for _, row := range sortedRows {
-			fmt.Fprintln(stdout, emit.BuildInsert(d, tableByName[name], row))
+		for _, row := range slices.Backward(sortedRows) {
+			fmt.Fprintln(stdout, emit.BuildDelete(d, tableByName[name], row))
 		}
 	}
 
