@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"time"
 
 	"github.com/mickamy/subset/internal/dialect"
 	"github.com/mickamy/subset/internal/emit"
@@ -45,14 +46,8 @@ func runDelete(args []string, stdout, stderr io.Writer) int {
 		return exit.Usage
 	}
 
-	if *planFlag {
-		fmt.Fprintln(stderr, "subset delete: --plan is not yet implemented")
-
-		return exit.NotImplemented
-	}
-
 	ctx := context.Background()
-	if err := deleteRows(ctx, stdout, dsnStr, tableName, whereClause); err != nil {
+	if err := deleteRows(ctx, stdout, dsnStr, tableName, whereClause, *planFlag); err != nil {
 		fmt.Fprintf(stderr, "subset delete: %v\n", err)
 
 		return exit.Error
@@ -61,7 +56,9 @@ func runDelete(args []string, stdout, stderr io.Writer) int {
 	return exit.OK
 }
 
-func deleteRows(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause string) error {
+func deleteRows(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause string, planOnly bool) error {
+	start := time.Now()
+
 	db, err := openDB(dsnStr)
 	if err != nil {
 		return err
@@ -70,39 +67,60 @@ func deleteRows(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereC
 
 	schema, err := introspect.Do(ctx, dsnStr)
 	if err != nil {
-		return fmt.Errorf("introspect: %w", err)
+		return fmt.Errorf("could not read database schema: %w", err)
 	}
 
 	d, err := dialect.New(dsnStr)
 	if err != nil {
-		return fmt.Errorf("dialect: %w", err)
+		return fmt.Errorf("could not select SQL dialect: %w", err)
+	}
+
+	if err := requireTable(schema, tableName); err != nil {
+		return err
 	}
 
 	collected, err := extract.Walk(ctx, db, d, schema, tableName, whereClause, extract.Backward)
 	if err != nil {
-		return fmt.Errorf("walk: %w", err)
+		return fmt.Errorf("could not collect rows: %w", err)
 	}
 
 	order, err := plan.Build(schema.Tables)
 	if err != nil {
-		return fmt.Errorf("topo sort: %w", err)
+		return fmt.Errorf("could not order tables: %w", err)
 	}
 	tableByName := make(map[string]introspect.Table, len(schema.Tables))
 	for _, t := range schema.Tables {
 		tableByName[t.Name] = t
 	}
 
-	// Delete most-dependent rows first: walk the parents-first topo order in
-	// reverse across tables, and reverse SortByPK within each self-referencing
-	// table so that referencing rows are removed before the rows they point at.
+	// Collected tables in emit order: most-dependent first, i.e., the
+	// parents-first topo order walked in reverse.
+	counts := make(map[string]int)
+	var emitOrder []string
 	for _, name := range slices.Backward(order) {
-		rows := collected.Rows[name]
-		if len(rows) == 0 {
-			continue
+		if c := len(collected.Rows[name]); c > 0 {
+			counts[name] = c
+			emitOrder = append(emitOrder, name)
 		}
-		sortedRows, err := extract.SortByPK(rows, tableByName[name])
+	}
+
+	if planOnly {
+		emit.WritePlan(stdout, "delete", false, schema, counts, emitOrder, tableName, time.Since(start))
+
+		return nil
+	}
+
+	total := 0
+	for _, c := range counts {
+		total += c
+	}
+	fmt.Fprintln(stdout, emit.SummaryComment("delete", total, len(emitOrder), false))
+	// Within each self-referencing table, reverse SortByPK so referencing rows
+	// are removed before the rows they point at.
+	for _, name := range emitOrder {
+		sortedRows, err := extract.SortByPK(collected.Rows[name], tableByName[name])
 		if err != nil {
-			return fmt.Errorf("sort %q: %w", name, err)
+			return fmt.Errorf("could not order rows: %w", err)
 		}
 		for _, row := range slices.Backward(sortedRows) {
 			fmt.Fprintln(stdout, emit.BuildDelete(d, tableByName[name], row))

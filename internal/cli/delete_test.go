@@ -6,6 +6,7 @@ import (
 
 	"github.com/mickamy/subset/internal/cli"
 	"github.com/mickamy/subset/internal/exit"
+	"github.com/mickamy/subset/internal/introspect"
 )
 
 // TestRunDelete_ArgErrors covers the argument-validation and early-failure
@@ -26,8 +27,8 @@ func TestRunDelete_ArgErrors(t *testing.T) {
 			[]string{"delete", "postgres://x", "table", "--where", "id=1", "--id", "2"},
 			exit.Usage,
 		},
-		{"plan not implemented", []string{"delete", "postgres://x", "table", "--id", "1", "--plan"}, exit.NotImplemented},
 		{"unsupported dsn scheme", []string{"delete", "bogus://x", "table", "--id", "1"}, exit.Error},
+		{"unsupported dsn scheme with plan", []string{"delete", "bogus://x", "table", "--id", "1", "--plan"}, exit.Error},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -38,6 +39,26 @@ func TestRunDelete_ArgErrors(t *testing.T) {
 				t.Errorf("exit = %d; want %d (stderr=%s)", got, tc.want, errBuf.String())
 			}
 		})
+	}
+}
+
+func TestRequireTable(t *testing.T) {
+	t.Parallel()
+
+	schema := introspect.Schema{Tables: []introspect.Table{
+		{Name: "users"},
+		{Name: "orders"},
+	}}
+
+	if err := cli.RequireTable(schema, "orders"); err != nil {
+		t.Errorf("RequireTable(orders) = %v; want nil", err)
+	}
+	err := cli.RequireTable(schema, "ghost")
+	if err == nil {
+		t.Fatal("RequireTable(ghost) = nil; want error")
+	}
+	if got := err.Error(); got != `unknown table "ghost"` {
+		t.Errorf("error = %q; want %q", got, `unknown table "ghost"`)
 	}
 }
 

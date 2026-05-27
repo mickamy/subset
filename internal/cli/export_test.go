@@ -1,3 +1,6 @@
 package cli
 
-var SplitArgs = splitArgs
+var (
+	SplitArgs    = splitArgs
+	RequireTable = requireTable
+)
