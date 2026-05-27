@@ -220,7 +220,8 @@ func TestSortByPK_CompositeSelfRefErrors(t *testing.T) {
 			},
 		},
 	}
-	_, err := extract.SortByPK(nil, table)
+	rows := []extract.Row{{"id": 1, "a": 1, "b": 2}}
+	_, err := extract.SortByPK(rows, table)
 	if err == nil {
 		t.Fatal("expected error for composite self-ref")
 	}
@@ -273,7 +274,8 @@ func TestSortByPK_CompositePKErrors(t *testing.T) {
 			},
 		},
 	}
-	_, err := extract.SortByPK(nil, table)
+	rows := []extract.Row{{"a": 1, "b": 2, "parent": 1}}
+	_, err := extract.SortByPK(rows, table)
 	if err == nil {
 		t.Fatal("expected error for composite PK with self-ref")
 	}
@@ -294,11 +296,58 @@ func TestSortByPK_NoPKWithSelfRefErrors(t *testing.T) {
 			},
 		},
 	}
-	_, err := extract.SortByPK(nil, table)
+	rows := []extract.Row{{"parent": 1}}
+	_, err := extract.SortByPK(rows, table)
 	if err == nil {
 		t.Fatal("expected error for self-ref table without a primary key")
 	}
 	if !strings.Contains(err.Error(), "single-column primary key") {
 		t.Errorf("err = %v; want single-column primary key message", err)
+	}
+}
+
+func TestSortByPK_NilPKErrors(t *testing.T) {
+	t.Parallel()
+
+	table := introspect.Table{
+		Name:       "employees",
+		PrimaryKey: []string{"id"},
+		ForeignKeys: []introspect.ForeignKey{
+			{
+				Name:              "fk_manager",
+				Columns:           []string{"manager_id"},
+				ReferencedTable:   "employees",
+				ReferencedColumns: []string{"id"},
+			},
+		},
+	}
+	rows := []extract.Row{{"id": nil, "manager_id": nil}}
+	_, err := extract.SortByPK(rows, table)
+	if err == nil {
+		t.Fatal("expected error for nil primary key")
+	}
+	if !strings.Contains(err.Error(), "nil primary key") {
+		t.Errorf("err = %v; want nil primary key message", err)
+	}
+}
+
+func TestSortByPK_EmptyRows_NoValidation(t *testing.T) {
+	t.Parallel()
+
+	// Even a table with an unsupported composite PK returns no error when
+	// there are no rows to sort — nothing to order, nothing to validate.
+	table := introspect.Table{
+		Name:       "nodes",
+		PrimaryKey: []string{"a", "b"},
+		ForeignKeys: []introspect.ForeignKey{
+			{Name: "fk", Columns: []string{"parent"}, ReferencedTable: "nodes", ReferencedColumns: []string{"a"}},
+		},
+	}
+	got, err := extract.SortByPK([]extract.Row{}, table)
+	if err != nil {
+		t.Fatalf("SortByPK on empty rows: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("len = %d; want 0", len(got))
 	}
 }

@@ -17,7 +17,7 @@ import (
 // DEFERRABLE constraint to succeed, which is out of scope.
 func SortByPK(rows []Row, table introspect.Table) ([]Row, error) {
 	selfRefs := findSelfRefs(table)
-	if len(selfRefs) == 0 {
+	if len(selfRefs) == 0 || len(rows) == 0 {
 		return rows, nil
 	}
 	if len(table.PrimaryKey) != 1 {
@@ -40,7 +40,11 @@ func SortByPK(rows []Row, table introspect.Table) ([]Row, error) {
 
 	byPK := make(map[any]Row, len(rows))
 	for _, row := range rows {
-		byPK[normalizeKey(row[pkCol])] = row
+		pkVal := row[pkCol]
+		if pkVal == nil {
+			return nil, fmt.Errorf("table %q has a row with nil primary key %q", table.Name, pkCol)
+		}
+		byPK[normalizeKey(pkVal)] = row
 	}
 
 	const (
