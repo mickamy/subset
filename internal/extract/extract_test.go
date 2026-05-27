@@ -1,7 +1,6 @@
 package extract_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/mickamy/subset/internal/dialect"
@@ -39,7 +38,7 @@ func TestWalk_ValidationErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := extract.Walk(context.Background(), nil, dialect.Postgres{}, schema, tc.table, "", tc.dir)
+			_, err := extract.Walk(t.Context(), nil, dialect.Postgres{}, schema, tc.table, "", tc.dir)
 			if err == nil {
 				t.Fatalf("Walk(%q) = nil error; want error", tc.table)
 			}
