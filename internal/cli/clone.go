@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/mickamy/subset/internal/dialect"
 	"github.com/mickamy/subset/internal/emit"
@@ -45,14 +46,8 @@ func runClone(args []string, stdout, stderr io.Writer) int {
 		return exit.Usage
 	}
 
-	if *planFlag {
-		fmt.Fprintln(stderr, "subset clone: --plan is not yet implemented")
-
-		return exit.NotImplemented
-	}
-
 	ctx := context.Background()
-	if err := clone(ctx, stdout, dsnStr, tableName, whereClause); err != nil {
+	if err := clone(ctx, stdout, dsnStr, tableName, whereClause, *planFlag); err != nil {
 		fmt.Fprintf(stderr, "subset clone: %v\n", err)
 
 		return exit.Error
@@ -74,7 +69,9 @@ func buildWhereClause(whereFlag, idFlag string) (string, error) {
 	}
 }
 
-func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause string) error {
+func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause string, planOnly bool) error {
+	start := time.Now()
+
 	db, err := openDB(dsnStr)
 	if err != nil {
 		return err
@@ -104,12 +101,30 @@ func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause
 	for _, t := range schema.Tables {
 		tableByName[t.Name] = t
 	}
+
+	// Collected tables in emit order (parents first), with their row counts.
+	counts := make(map[string]int)
+	var emitOrder []string
 	for _, name := range order {
-		rows := collected.Rows[name]
-		if len(rows) == 0 {
-			continue
+		if c := len(collected.Rows[name]); c > 0 {
+			counts[name] = c
+			emitOrder = append(emitOrder, name)
 		}
-		sortedRows, err := extract.SortByPK(rows, tableByName[name])
+	}
+
+	if planOnly {
+		emit.WritePlan(stdout, "clone", true, schema, counts, emitOrder, tableName, time.Since(start))
+
+		return nil
+	}
+
+	total := 0
+	for _, c := range counts {
+		total += c
+	}
+	fmt.Fprintln(stdout, emit.SummaryComment("clone", total, len(emitOrder), true))
+	for _, name := range emitOrder {
+		sortedRows, err := extract.SortByPK(collected.Rows[name], tableByName[name])
 		if err != nil {
 			return fmt.Errorf("sort %q: %w", name, err)
 		}

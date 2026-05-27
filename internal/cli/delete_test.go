@@ -26,8 +26,8 @@ func TestRunDelete_ArgErrors(t *testing.T) {
 			[]string{"delete", "postgres://x", "table", "--where", "id=1", "--id", "2"},
 			exit.Usage,
 		},
-		{"plan not implemented", []string{"delete", "postgres://x", "table", "--id", "1", "--plan"}, exit.NotImplemented},
 		{"unsupported dsn scheme", []string{"delete", "bogus://x", "table", "--id", "1"}, exit.Error},
+		{"unsupported dsn scheme with plan", []string{"delete", "bogus://x", "table", "--id", "1", "--plan"}, exit.Error},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
