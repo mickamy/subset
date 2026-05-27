@@ -101,6 +101,30 @@ func TestWritePlan_DeleteBackward(t *testing.T) {
 	}
 }
 
+func TestWritePlan_SelfRefIgnoredInPath(t *testing.T) {
+	t.Parallel()
+
+	// employees.manager_id is a self-reference; it must not appear as an FK
+	// path edge. The whole closure is one self-referencing table.
+	schema := introspect.Schema{Tables: []introspect.Table{
+		{
+			Name:        "employees",
+			PrimaryKey:  []string{"id"},
+			ForeignKeys: []introspect.ForeignKey{{ReferencedTable: "employees"}},
+		},
+	}}
+	counts := map[string]int{"employees": 3}
+
+	var buf bytes.Buffer
+	emit.WritePlan(&buf, "clone", true, schema, counts, []string{"employees"}, "employees", time.Millisecond)
+
+	want := "subset clone: 1 table, 3 rows in 1ms\n" +
+		"  employees  3 rows  seed\n"
+	if got := buf.String(); got != want {
+		t.Errorf("WritePlan =\n%q\nwant\n%q", got, want)
+	}
+}
+
 func TestSummaryComment(t *testing.T) {
 	t.Parallel()
 
