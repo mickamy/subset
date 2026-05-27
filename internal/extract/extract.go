@@ -102,6 +102,8 @@ func Walk(
 			groups, err = walkForward(ctx, db, d, item, tableByName)
 		case Backward:
 			groups, err = walkBackward(ctx, db, d, item, referencers[item.table.Name])
+		default:
+			return nil, fmt.Errorf("unsupported walk direction: %d", dir)
 		}
 		if err != nil {
 			return nil, err
