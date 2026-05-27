@@ -26,9 +26,10 @@ type Collected struct {
 // is appended). The CLI rejects empty filters; this is for callers that
 // want to clone the full contents of a small lookup table.
 //
-// Composite primary keys and composite foreign keys are supported.
-// Self-referencing FKs (e.g., employees.manager_id -> employees.id) return
-// an error because intra-table emission ordering is not yet implemented.
+// Composite primary keys, composite foreign keys, and self-referencing
+// FKs are all supported. For self-ref tables, callers should run the
+// per-table row slice through SortByPK before emitting so that referenced
+// rows appear before their references.
 func Walk(
 	ctx context.Context,
 	db *sql.DB,
@@ -77,11 +78,6 @@ func Walk(
 		queue = queue[1:]
 
 		for _, fk := range item.table.ForeignKeys {
-			if fk.ReferencedTable == item.table.Name {
-				return nil, fmt.Errorf(
-					"table %q has self-referencing FK %q; v0.1 does not support self-references",
-					item.table.Name, fk.Name)
-			}
 			parent, ok := tableByName[fk.ReferencedTable]
 			if !ok {
 				continue

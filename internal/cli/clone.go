@@ -109,7 +109,11 @@ func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause
 		if len(rows) == 0 {
 			continue
 		}
-		for _, row := range rows {
+		sortedRows, err := extract.SortByPK(rows, tableByName[name])
+		if err != nil {
+			return fmt.Errorf("sort %q: %w", name, err)
+		}
+		for _, row := range sortedRows {
 			fmt.Fprintln(stdout, emit.BuildInsert(d, tableByName[name], row))
 		}
 	}
