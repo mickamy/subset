@@ -119,7 +119,7 @@ func TestWalk_ForwardClosure_Postgres(t *testing.T) {
 	}
 
 	t.Run("orders seed pulls users and tenants but not children", func(t *testing.T) {
-		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "orders", "id = 1")
+		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "orders", "id = 1", extract.Forward)
 		if err != nil {
 			t.Fatalf("Walk: %v", err)
 		}
@@ -135,7 +135,7 @@ func TestWalk_ForwardClosure_Postgres(t *testing.T) {
 	t.Run("dedup across overlapping parents", func(t *testing.T) {
 		// Both orders belong to Acme users, so we should see 1 tenant (deduped),
 		// 2 users (alice, bob), and 2 orders.
-		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "orders", "id IN (1, 2)")
+		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "orders", "id IN (1, 2)", extract.Forward)
 		if err != nil {
 			t.Fatalf("Walk: %v", err)
 		}
@@ -147,7 +147,7 @@ func TestWalk_ForwardClosure_Postgres(t *testing.T) {
 	t.Run("empty whereClause selects all rows from seed", func(t *testing.T) {
 		// "tenants" sits at the top of the FK graph (no outgoing FKs),
 		// so passing empty whereClause should yield exactly all tenants.
-		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "tenants", "")
+		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "tenants", "", extract.Forward)
 		if err != nil {
 			t.Fatalf("Walk: %v", err)
 		}
@@ -157,7 +157,7 @@ func TestWalk_ForwardClosure_Postgres(t *testing.T) {
 	t.Run("composite FK walks through composite PK", func(t *testing.T) {
 		// page_comments(1) -> pages(site_id=1, slug='home') via composite FK,
 		// then pages -> sites(1) via single-column FK.
-		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "page_comments", "id = 1")
+		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "page_comments", "id = 1", extract.Forward)
 		if err != nil {
 			t.Fatalf("Walk: %v", err)
 		}
@@ -167,10 +167,69 @@ func TestWalk_ForwardClosure_Postgres(t *testing.T) {
 	})
 
 	t.Run("unknown table errors", func(t *testing.T) {
-		_, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "nope", "id = 1")
+		_, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "nope", "id = 1", extract.Forward)
 		if err == nil {
 			t.Fatal("expected error for unknown table")
 		}
+	})
+}
+
+//nolint:paralleltest // mutates the public schema; cannot run in parallel
+func TestWalk_BackwardClosure_Postgres(t *testing.T) {
+	rawDSN := os.Getenv("SUBSET_TEST_DSN_POSTGRES")
+	if rawDSN == "" {
+		t.Skip("SUBSET_TEST_DSN_POSTGRES not set")
+	}
+
+	ctx := t.Context()
+	db, err := sql.Open("pgx", rawDSN)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := db.ExecContext(ctx, postgresFixtureSQL); err != nil {
+		t.Fatalf("apply fixture: %v", err)
+	}
+
+	schema, err := introspect.Do(ctx, rawDSN)
+	if err != nil {
+		t.Fatalf("introspect: %v", err)
+	}
+
+	t.Run("tenant seed pulls every dependent row", func(t *testing.T) {
+		// tenants/1 -> users{1,2}, products{1} -> orders{1,2} -> order_items{1}.
+		// Tenant 2's rows (dave, BETA product) stay out of the closure.
+		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "tenants", "id = 1", extract.Backward)
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		assertRowCount(t, result, "tenants", 1)
+		assertRowCount(t, result, "users", 2)
+		assertRowCount(t, result, "products", 1)
+		assertRowCount(t, result, "orders", 2)
+		assertRowCount(t, result, "order_items", 1)
+	})
+
+	t.Run("composite FK walks from referenced parent to children", func(t *testing.T) {
+		// sites/1 -> pages{home, about} -> page_comments{home}.
+		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "sites", "id = 1", extract.Backward)
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		assertRowCount(t, result, "sites", 1)
+		assertRowCount(t, result, "pages", 2)
+		assertRowCount(t, result, "page_comments", 1)
+	})
+
+	t.Run("leaf seed pulls only itself", func(t *testing.T) {
+		// order_items has no referencing tables, so the closure is just the seed.
+		result, err := extract.Walk(ctx, db, dialect.Postgres{}, schema, "order_items", "id = 1", extract.Backward)
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		assertRowCount(t, result, "order_items", 1)
+		assertRowCount(t, result, "orders", 0)
 	})
 }
 
@@ -281,7 +340,7 @@ func TestWalk_ForwardClosure_MySQL(t *testing.T) {
 	}
 
 	t.Run("orders seed pulls users and tenants but not children", func(t *testing.T) {
-		result, err := extract.Walk(ctx, db, dialect.MySQL{}, schema, "orders", "id = 1")
+		result, err := extract.Walk(ctx, db, dialect.MySQL{}, schema, "orders", "id = 1", extract.Forward)
 		if err != nil {
 			t.Fatalf("Walk: %v", err)
 		}
@@ -293,13 +352,72 @@ func TestWalk_ForwardClosure_MySQL(t *testing.T) {
 	})
 
 	t.Run("composite FK walks through composite PK", func(t *testing.T) {
-		result, err := extract.Walk(ctx, db, dialect.MySQL{}, schema, "page_comments", "id = 1")
+		result, err := extract.Walk(ctx, db, dialect.MySQL{}, schema, "page_comments", "id = 1", extract.Forward)
 		if err != nil {
 			t.Fatalf("Walk: %v", err)
 		}
 		assertRowCount(t, result, "page_comments", 1)
 		assertRowCount(t, result, "pages", 1)
 		assertRowCount(t, result, "sites", 1)
+	})
+}
+
+//nolint:paralleltest // mutates schema; cannot run in parallel
+func TestWalk_BackwardClosure_MySQL(t *testing.T) {
+	rawDSN := os.Getenv("SUBSET_TEST_DSN_MYSQL")
+	if rawDSN == "" {
+		t.Skip("SUBSET_TEST_DSN_MYSQL not set")
+	}
+
+	ctx := t.Context()
+	driverDSN, err := dsn.ToMySQLDSN(rawDSN)
+	if err != nil {
+		t.Fatalf("convert dsn: %v", err)
+	}
+	db, err := sql.Open("mysql", driverDSN)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if err := tsql.ResetMySQLTables(ctx, db); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	for stmt := range strings.SplitSeq(mysqlFixtureSQL, ";") {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("apply fixture: %v\nstmt: %s", err, stmt)
+		}
+	}
+
+	schema, err := introspect.Do(ctx, rawDSN)
+	if err != nil {
+		t.Fatalf("introspect: %v", err)
+	}
+
+	t.Run("tenant seed pulls every dependent row", func(t *testing.T) {
+		result, err := extract.Walk(ctx, db, dialect.MySQL{}, schema, "tenants", "id = 1", extract.Backward)
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		assertRowCount(t, result, "tenants", 1)
+		assertRowCount(t, result, "users", 2)
+		assertRowCount(t, result, "products", 1)
+		assertRowCount(t, result, "orders", 2)
+		assertRowCount(t, result, "order_items", 1)
+	})
+
+	t.Run("composite FK walks from referenced parent to children", func(t *testing.T) {
+		result, err := extract.Walk(ctx, db, dialect.MySQL{}, schema, "sites", "id = 1", extract.Backward)
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		assertRowCount(t, result, "sites", 1)
+		assertRowCount(t, result, "pages", 2)
+		assertRowCount(t, result, "page_comments", 1)
 	})
 }
 

@@ -91,7 +91,7 @@ func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause
 		return fmt.Errorf("dialect: %w", err)
 	}
 
-	collected, err := extract.Walk(ctx, db, d, schema, tableName, whereClause)
+	collected, err := extract.Walk(ctx, db, d, schema, tableName, whereClause, extract.Forward)
 	if err != nil {
 		return fmt.Errorf("walk: %w", err)
 	}

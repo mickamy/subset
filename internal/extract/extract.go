@@ -19,23 +19,38 @@ type Collected struct {
 	Rows map[string][]Row
 }
 
+// Direction selects which way Walk traverses the FK graph from the seed.
+type Direction int
+
+const (
+	// Forward collects the FK parents a row references (clone). Emit the
+	// result parents-first so every INSERT lands after its referenced rows.
+	Forward Direction = iota
+	// Backward collects the rows that reference a row (delete). Emit the
+	// result most-dependent-first so every DELETE runs before the row it
+	// depends on.
+	Backward
+)
+
 // Walk extracts rows from a seed (seedTable + whereClause) and recursively
-// collects FK-referenced parent rows (forward closure). Used by clone.
+// collects the FK-connected closure in the given direction: parents for
+// Forward (clone), referencing children for Backward (delete).
 //
 // An empty whereClause selects every row in seedTable (no WHERE filter
 // is appended). The CLI rejects empty filters; this is for callers that
-// want to clone the full contents of a small lookup table.
+// want to operate on the full contents of a small lookup table.
 //
 // Composite primary keys, composite foreign keys, and self-referencing
-// FKs are all supported. For self-ref tables, callers should run the
-// per-table row slice through SortByPK before emitting so that referenced
-// rows appear before their references.
+// FKs are all supported. Within a single table, callers order the row slice
+// with SortByPK: emit it as-is for Forward (referenced rows first), reversed
+// for Backward (referencing rows first).
 func Walk(
 	ctx context.Context,
 	db *sql.DB,
 	d dialect.Dialect,
 	schema introspect.Schema,
 	seedTable, whereClause string,
+	dir Direction,
 ) (*Collected, error) {
 	tableByName := make(map[string]introspect.Table, len(schema.Tables))
 	for _, t := range schema.Tables {
@@ -47,6 +62,14 @@ func Walk(
 	}
 	if len(seed.PrimaryKey) == 0 {
 		return nil, fmt.Errorf("table %q has no primary key", seed.Name)
+	}
+
+	// For Backward, index FKs by the table they reference so we can find the
+	// rows pointing at a given row. Forward reads FKs straight off the row's
+	// own table, so it needs no index.
+	var referencers map[string][]referencer
+	if dir == Backward {
+		referencers = buildReferencers(schema)
 	}
 
 	collected := &Collected{Rows: make(map[string][]Row)}
@@ -61,10 +84,6 @@ func Walk(
 		return nil, fmt.Errorf("seed select: %w", err)
 	}
 
-	type queueItem struct {
-		table introspect.Table
-		row   Row
-	}
 	queue := make([]queueItem, 0, len(seedRows))
 	for _, row := range seedRows {
 		if markIfNew(visited, seed.Name, compositeKey(row, seed.PrimaryKey)) {
@@ -77,37 +96,130 @@ func Walk(
 		item := queue[0]
 		queue = queue[1:]
 
-		for _, fk := range item.table.ForeignKeys {
-			parent, ok := tableByName[fk.ReferencedTable]
-			if !ok {
-				continue
-			}
-			if len(parent.PrimaryKey) == 0 {
-				return nil, fmt.Errorf("table %q has no primary key", parent.Name)
-			}
+		var groups []fetchedGroup
+		switch dir {
+		case Forward:
+			groups, err = walkForward(ctx, db, d, item, tableByName)
+		case Backward:
+			groups, err = walkBackward(ctx, db, d, item, referencers[item.table.Name])
+		}
+		if err != nil {
+			return nil, err
+		}
 
-			args, ok := fkArgs(item.row, fk.Columns)
-			if !ok {
-				continue
-			}
-			parentQuery := fmt.Sprintf("%s WHERE %s",
-				selectAll(d, parent),
-				fkWhereClause(d, fk.ReferencedColumns))
-			parentRows, err := querySelect(ctx, db, parentQuery, args, parent)
-			if err != nil {
-				return nil, fmt.Errorf("fetch parent %q: %w", parent.Name, err)
-			}
-
-			for _, prow := range parentRows {
-				if markIfNew(visited, parent.Name, compositeKey(prow, parent.PrimaryKey)) {
-					collected.Rows[parent.Name] = append(collected.Rows[parent.Name], prow)
-					queue = append(queue, queueItem{parent, prow})
+		for _, g := range groups {
+			for _, row := range g.rows {
+				if markIfNew(visited, g.table.Name, compositeKey(row, g.table.PrimaryKey)) {
+					collected.Rows[g.table.Name] = append(collected.Rows[g.table.Name], row)
+					queue = append(queue, queueItem{g.table, row})
 				}
 			}
 		}
 	}
 
 	return collected, nil
+}
+
+type queueItem struct {
+	table introspect.Table
+	row   Row
+}
+
+// fetchedGroup pairs a target table with the rows fetched for it during one
+// expansion step, ready to be deduped and enqueued by Walk.
+type fetchedGroup struct {
+	table introspect.Table
+	rows  []Row
+}
+
+// referencer is a foreign key together with the table that declares it, used
+// to walk backward from a referenced row to the rows that reference it.
+type referencer struct {
+	table introspect.Table
+	fk    introspect.ForeignKey
+}
+
+// buildReferencers indexes every FK by the table it references, so a Backward
+// walk can find all rows pointing at a given table (self-references included).
+func buildReferencers(schema introspect.Schema) map[string][]referencer {
+	index := make(map[string][]referencer)
+	for _, t := range schema.Tables {
+		for _, fk := range t.ForeignKeys {
+			index[fk.ReferencedTable] = append(index[fk.ReferencedTable], referencer{t, fk})
+		}
+	}
+
+	return index
+}
+
+// walkForward fetches the FK parents referenced by item.row: for each FK on
+// item's table, select the parent row matching the FK column values.
+func walkForward(
+	ctx context.Context,
+	db *sql.DB,
+	d dialect.Dialect,
+	item queueItem,
+	tableByName map[string]introspect.Table,
+) ([]fetchedGroup, error) {
+	var groups []fetchedGroup
+	for _, fk := range item.table.ForeignKeys {
+		parent, ok := tableByName[fk.ReferencedTable]
+		if !ok {
+			continue
+		}
+		if len(parent.PrimaryKey) == 0 {
+			return nil, fmt.Errorf("table %q has no primary key", parent.Name)
+		}
+
+		args, ok := fkArgs(item.row, fk.Columns)
+		if !ok {
+			continue
+		}
+		query := fmt.Sprintf("%s WHERE %s",
+			selectAll(d, parent),
+			fkWhereClause(d, fk.ReferencedColumns))
+		rows, err := querySelect(ctx, db, query, args, parent)
+		if err != nil {
+			return nil, fmt.Errorf("fetch parent %q: %w", parent.Name, err)
+		}
+		groups = append(groups, fetchedGroup{parent, rows})
+	}
+
+	return groups, nil
+}
+
+// walkBackward fetches the rows that reference item.row: for each FK pointing
+// at item's table, select the child rows whose FK columns match item.row's
+// referenced values.
+func walkBackward(
+	ctx context.Context,
+	db *sql.DB,
+	d dialect.Dialect,
+	item queueItem,
+	refs []referencer,
+) ([]fetchedGroup, error) {
+	var groups []fetchedGroup
+	for _, ref := range refs {
+		child := ref.table
+		if len(child.PrimaryKey) == 0 {
+			return nil, fmt.Errorf("table %q has no primary key", child.Name)
+		}
+
+		args, ok := fkArgs(item.row, ref.fk.ReferencedColumns)
+		if !ok {
+			continue
+		}
+		query := fmt.Sprintf("%s WHERE %s",
+			selectAll(d, child),
+			fkWhereClause(d, ref.fk.Columns))
+		rows, err := querySelect(ctx, db, query, args, child)
+		if err != nil {
+			return nil, fmt.Errorf("fetch child %q: %w", child.Name, err)
+		}
+		groups = append(groups, fetchedGroup{child, rows})
+	}
+
+	return groups, nil
 }
 
 func selectAll(d dialect.Dialect, table introspect.Table) string {
