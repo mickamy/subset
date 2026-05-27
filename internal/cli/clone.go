@@ -56,6 +56,18 @@ func runClone(args []string, stdout, stderr io.Writer) int {
 	return exit.OK
 }
 
+// requireTable reports a clean error when the seed table is not in the schema,
+// so the common typo case avoids the deeper "could not collect rows" wrapping.
+func requireTable(schema introspect.Schema, name string) error {
+	for _, t := range schema.Tables {
+		if t.Name == name {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("unknown table %q", name)
+}
+
 func buildWhereClause(whereFlag, idFlag string) (string, error) {
 	switch {
 	case whereFlag != "" && idFlag != "":
@@ -80,22 +92,26 @@ func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause
 
 	schema, err := introspect.Do(ctx, dsnStr)
 	if err != nil {
-		return fmt.Errorf("introspect: %w", err)
+		return fmt.Errorf("could not read database schema: %w", err)
 	}
 
 	d, err := dialect.New(dsnStr)
 	if err != nil {
-		return fmt.Errorf("dialect: %w", err)
+		return fmt.Errorf("could not select SQL dialect: %w", err)
+	}
+
+	if err := requireTable(schema, tableName); err != nil {
+		return err
 	}
 
 	collected, err := extract.Walk(ctx, db, d, schema, tableName, whereClause, extract.Forward)
 	if err != nil {
-		return fmt.Errorf("walk: %w", err)
+		return fmt.Errorf("could not collect rows: %w", err)
 	}
 
 	order, err := plan.Build(schema.Tables)
 	if err != nil {
-		return fmt.Errorf("topo sort: %w", err)
+		return fmt.Errorf("could not order tables: %w", err)
 	}
 	tableByName := make(map[string]introspect.Table, len(schema.Tables))
 	for _, t := range schema.Tables {
@@ -126,7 +142,7 @@ func clone(ctx context.Context, stdout io.Writer, dsnStr, tableName, whereClause
 	for _, name := range emitOrder {
 		sortedRows, err := extract.SortByPK(collected.Rows[name], tableByName[name])
 		if err != nil {
-			return fmt.Errorf("sort %q: %w", name, err)
+			return fmt.Errorf("could not order rows: %w", err)
 		}
 		for _, row := range sortedRows {
 			fmt.Fprintln(stdout, emit.BuildInsert(d, tableByName[name], row))
